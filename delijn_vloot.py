@@ -7,15 +7,7 @@ import folium
 from streamlit_folium import folium_static
 
 # --- CONFIGURATIE ---
-st.set_page_config(layout="wide", page_title="De Lijn Tracker", page_icon="🚌")
-
-# Verbeterde styling voor maximale breedte zonder de boel te breken
-st.markdown("""
-    <style>
-        .main .block-container { max-width: 95%; padding-top: 1rem; }
-        iframe { width: 100% !important; height: 75vh !important; }
-    </style>
-""", unsafe_allow_html=True)
+st.set_page_config(layout="wide", page_title="De Lijn Analyse", page_icon="🚌")
 
 # --- BEVEILIGING ---
 if "auth" not in st.session_state: st.session_state.auth = False
@@ -29,7 +21,7 @@ if not st.session_state.auth:
         else: st.error("❌ Verkeerd")
     st.stop()
 
-# --- DATA & ANALYSE ---
+# --- DATA & ANALYSE FUNCTIES ---
 API_KEY = st.secrets["DELIJN_API_KEY"]
 FLEET = ["302990", "302471", "331406", "645099", "645098", "645092"]
 
@@ -38,21 +30,9 @@ if 'counter' not in st.session_state:
 if 'in_zone_last' not in st.session_state:
     st.session_state.in_zone_last = {b_id: False for b_id in FLEET}
 
-def is_in_polygon(lat, lon, polygon):
-    n = len(polygon)
-    inside = False
-    p1x, p1y = polygon[0]
-    for i in range(n + 1):
-        p2x, p2y = polygon[i % n]
-        if lon > min(p1y, p2y):
-            if lon <= max(p1y, p2y):
-                if lat <= max(p1x, p2x):
-                    if p1y != p2y:
-                        xints = (lon - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-                    if p1x == p2x or lat <= xints:
-                        inside = not inside
-        p1x, p1y = p2x, p2y
-    return inside
+def is_in_box(lat, lon, n, s, e, w):
+    """Controleert of de bus binnen de ingestelde vierkante zone valt."""
+    return s <= lat <= n and w <= lon <= e
 
 def get_bus_data(bus_id):
     url = f"https://api.delijn.be/location-tracking/v1/locations?vehicleId={bus_id}&t={int(time.time())}"
@@ -65,10 +45,26 @@ def get_bus_data(bus_id):
             return data["data"][0] if data.get("data") else None
     except: return None
 
-# --- ZONE DEFINITIE (Bornem Markt voorbeeld) ---
-CHECK_ZONE = [
-    [51.0965, 4.2240], [51.0990, 4.2240], [51.0990, 4.2290], [51.0965, 4.2290]
-]
+# --- SIDEBAR: ZONE INSTELLEN ---
+st.sidebar.title("🎯 Zone Instellen")
+st.sidebar.info("Pas de coördinaten aan om de controlebox te verplaatsen.")
+
+# Standaardwaarden staan nu rond Bornem Markt
+lat_n = st.sidebar.number_input("Noord (Lat)", value=51.0990, format="%.4f")
+lat_s = st.sidebar.number_input("Zuid (Lat)", value=51.0965, format="%.4f")
+lon_e = st.sidebar.number_input("Oost (Lon)", value=4.2290, format="%.4f")
+lon_w = st.sidebar.number_input("West (Lon)", value=4.2240, format="%.4f")
+
+CHECK_ZONE_BOX = [[lat_s, lon_w], [lat_n, lon_w], [lat_n, lon_e], [lat_s, lon_e]]
+
+st.sidebar.divider()
+st.sidebar.title("📊 Passages")
+for b_id, count in st.session_state.counter.items():
+    st.sidebar.write(f"Bus {b_id}: **{count}**")
+
+if st.sidebar.button("Reset Tellers"):
+    st.session_state.counter = {b_id: 0 for b_id in FLEET}
+    st.rerun()
 
 # --- VERWERKING ---
 current_bussen = []
@@ -76,32 +72,25 @@ for b_id in FLEET:
     loc = get_bus_data(b_id)
     if loc:
         lat, lon = loc['lat'], loc['lon']
-        in_zone = is_in_polygon(lat, lon, CHECK_ZONE)
+        in_zone = is_in_box(lat, lon, lat_n, lat_s, lon_e, lon_w)
         
-        # Alleen tellen als de bus de zone BINNENRIJDT (niet als hij er al in stond)
+        # Detecteer 'Entry event' (als hij van buiten naar binnen komt)
         if in_zone and not st.session_state.in_zone_last[b_id]:
             st.session_state.counter[b_id] += 1
         
         st.session_state.in_zone_last[b_id] = in_zone
         current_bussen.append({"id": b_id, "lat": lat, "lon": lon, "speed": loc.get('speed', 0), "in_zone": in_zone})
 
-# --- UI ---
+# --- UI HOOFDSCHERM ---
 st.title("🚌 De Lijn Live Vloot Monitor")
 
-# Sidebar Statistieken
-st.sidebar.title("📊 Passages in Zone")
-for b_id, count in st.session_state.counter.items():
-    st.sidebar.write(f"Bus {b_id}: **{count}**")
-if st.sidebar.button("Reset Tellers"):
-    st.session_state.counter = {b_id: 0 for b_id in FLEET}
-    st.rerun()
+# Kaart (we gebruiken weer folium_static voor stabiliteit)
+m = folium.Map(location=[(lat_n+lat_s)/2, (lon_e+lon_w)/2], zoom_start=14)
 
-# Kaart
-m = folium.Map(location=[51.08, 4.25], zoom_start=12)
-
+# Teken de handmatige box
 folium.Polygon(
-    locations=CHECK_ZONE, color="red", weight=2, 
-    fill=True, fill_color="red", fill_opacity=0.1, tooltip="Analyse Zone"
+    locations=CHECK_ZONE_BOX, color="red", weight=3, 
+    fill=True, fill_color="red", fill_opacity=0.15, tooltip="Jouw Analyse Zone"
 ).add_to(m)
 
 for b in current_bussen:
@@ -109,17 +98,16 @@ for b in current_bussen:
     icon_html = f'''
         <div style="display: flex; flex-direction: column; align-items: center;">
             <div style="color: {color}; font-size: 24px; text-shadow: 1px 1px 2px black;">●</div>
-            <div style="background: white; border: 1px solid black; padding: 1px 3px; border-radius: 3px; font-size: 10px; font-weight: bold; white-space: nowrap;">
+            <div style="background: white; border: 1px solid black; padding: 1px 3px; border-radius: 3px; font-size: 10px; font-weight: bold; color: black;">
                 {b['id']} ({b['speed']}kmu)
             </div>
         </div>
     '''
     folium.Marker([b['lat'], b['lon']], icon=folium.DivIcon(html=icon_html, icon_size=(100, 40), icon_anchor=(50, 20))).add_to(m)
 
-# Toon Kaart
 folium_static(m)
 
-# Statusbalken (Teruggezet!)
+# Statusbalken
 c1, c2 = st.columns(2)
 tz = pytz.timezone('Europe/Brussels')
 with c1:
