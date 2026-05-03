@@ -39,8 +39,9 @@ if 'history' not in st.session_state: st.session_state.history = {}
 if 'drawn_polygon' not in st.session_state: st.session_state.drawn_polygon = None
 if 'map_center' not in st.session_state: st.session_state.map_center = [51.0425, 4.3320]
 if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 15
-# Nieuw: trackt wanneer een bus is gestopt
 if 'stop_times' not in st.session_state: st.session_state.stop_times = {b_id: None for b_id in FLEET}
+# Nieuw: houdt bij wanneer de bus de zone verliet
+if 'last_zone_exit' not in st.session_state: st.session_state.last_zone_exit = {b_id: None for b_id in FLEET}
 
 # --- HELPER FUNCTIES ---
 def is_in_polygon(lat, lon, polygon):
@@ -76,18 +77,37 @@ for b_id in FLEET:
         speed = loc.get('speed', 0)
         heading = None
         
-        # Stilstand Logica
+        # 1. Stilstand Logica
         if speed == 0:
             if st.session_state.stop_times[b_id] is None:
                 st.session_state.stop_times[b_id] = now_utc
-            duration = now_utc - st.session_state.stop_times[b_id]
-            minutes, seconds = divmod(duration.seconds, 60)
-            stop_str = f"{minutes} min {seconds} sec"
+            diff = now_utc - st.session_state.stop_times[b_id]
+            stop_str = f"{diff.seconds // 60}m {diff.seconds % 60}s"
         else:
             st.session_state.stop_times[b_id] = None
             stop_str = "Rijdt"
 
-        # Heading logica
+        # 2. Zone & Passage Logica
+        in_zone = is_in_polygon(curr_lat, curr_lon, st.session_state.drawn_polygon)
+        was_in_zone = st.session_state.history.get(b_id, {}).get('in_zone', False)
+        
+        # Gebeurtenis: Bus rijdt zone BINNEN
+        if in_zone and not was_in_zone:
+            st.session_state.counter[b_id] += 1
+        
+        # Gebeurtenis: Bus verlaat zone (EXIT) -> Tijd opslaan voor rijtijd-indicatie
+        if was_in_zone and not in_zone:
+            st.session_state.last_zone_exit[b_id] = now_utc
+
+        # Bereken tijd sinds laatste zone-bezoek
+        since_zone_str = "Geen data"
+        if st.session_state.last_zone_exit[b_id]:
+            diff_zone = now_utc - st.session_state.last_zone_exit[b_id]
+            since_zone_str = f"{diff_zone.seconds // 60}m {diff_zone.seconds % 60}s geleden"
+        elif in_zone:
+            since_zone_str = "Nu in zone"
+
+        # 3. Heading logica
         if b_id in st.session_state.history:
             prev = st.session_state.history[b_id]
             dist = abs(curr_lat - prev['lat']) + abs(curr_lon - prev['lon'])
@@ -95,15 +115,11 @@ for b_id in FLEET:
                 heading = math.degrees(math.atan2(math.sin(math.radians(curr_lon - prev['lon'])) * math.cos(math.radians(curr_lat)), math.cos(math.radians(prev['lat'])) * math.sin(math.radians(curr_lat)) - math.sin(math.radians(prev['lat'])) * math.cos(math.radians(curr_lat)) * math.cos(math.radians(curr_lon - prev['lon'])))) % 360
             else: heading = prev.get('heading')
         
-        in_zone = is_in_polygon(curr_lat, curr_lon, st.session_state.drawn_polygon)
-        if in_zone and not st.session_state.history.get(b_id, {}).get('in_zone', False):
-            st.session_state.counter[b_id] += 1
-        
         st.session_state.history[b_id] = {'lat': curr_lat, 'lon': curr_lon, 'heading': heading, 'in_zone': in_zone}
         current_bussen.append({
             "id": b_id, "lat": curr_lat, "lon": curr_lon, 
             "speed": speed, "heading": heading, "in_zone": in_zone,
-            "stop_duration": stop_str
+            "stop_duration": stop_str, "since_zone": since_zone_str
         })
 
 # --- UI INDELING ---
@@ -114,7 +130,9 @@ with st.sidebar:
     for b_id, count in st.session_state.counter.items():
         st.write(f"Bus {b_id}: **{count}**")
     if st.button("Reset Tellers"):
-        st.session_state.counter = {b_id: 0 for b_id in FLEET}; st.rerun()
+        st.session_state.counter = {b_id: 0 for b_id in FLEET}
+        st.session_state.last_zone_exit = {b_id: None for b_id in FLEET}
+        st.rerun()
 
 # --- TAB 1: LIVE MONITOR ---
 with tab1:
@@ -136,19 +154,19 @@ with tab1:
             </div>
         '''
         
-        # Popup tekst voor extra info bij klik
         popup_text = f"""
-            <div style="font-family: sans-serif; font-size: 14px;">
-                <b>Bus ID:</b> {b['id']}<br>
+            <div style="font-family: sans-serif; font-size: 13px; min-width: 150px;">
+                <b style="color:#2980b9;">Bus {b['id']}</b><hr style="margin:5px 0;">
                 <b>Snelheid:</b> {b['speed']} km/u<br>
                 <b>Status:</b> {b['stop_duration']}<br>
-                <b>In zone:</b> {'Ja' if b['in_zone'] else 'Nee'}
+                <b>Laatst in zone:</b> {b['since_zone']}<br>
+                <b>Positie:</b> {'Binnen zone' if b['in_zone'] else 'Buiten zone'}
             </div>
         """
         
         folium.Marker(
             [b['lat'], b['lon']], 
-            popup=folium.Popup(popup_text, max_width=200),
+            popup=folium.Popup(popup_text, max_width=250),
             icon=folium.DivIcon(
                 html=f'<div style="display:flex; flex-direction:column; align-items:center;">{icon_html}{label_html}</div>', 
                 icon_size=(150,70), icon_anchor=(75,35)
@@ -157,7 +175,7 @@ with tab1:
 
     folium_static(m1, width=1350, height=800)
     tz = pytz.timezone('Europe/Brussels')
-    st.info(f"🕒 Update: {datetime.now(tz).strftime('%H:%M:%S')} | 🚌 Actief: {len(current_bussen)}")
+    st.info(f"🕒 Update: {datetime.now(tz).strftime('%H:%M:%S')} | 🚌 Bussen online: {len(current_bussen)}")
 
 # --- TAB 2: SETUP ---
 with tab2:
@@ -171,7 +189,7 @@ with tab2:
         if out.get("last_active_drawing"):
             new_poly = out['last_active_drawing']['geometry']['coordinates'][0]
             st.session_state.drawn_polygon = [[p[1], p[0]] for p in new_poly]
-            st.success("Opgeslagen!")
+            st.success("Configuratie opgeslagen!")
 
 time.sleep(25)
 st.rerun()
