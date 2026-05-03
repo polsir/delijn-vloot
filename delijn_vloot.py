@@ -13,7 +13,8 @@ st.set_page_config(layout="wide", page_title="De Lijn Tracker Pro", page_icon="�
 st.markdown("""
     <style>
         .block-container { padding: 0.5rem 1rem !important; max-width: 100% !important; }
-        .stAlert { margin-top: 10px; }
+        .stTabs [data-baseweb="tab-list"] { gap: 24px; }
+        .stTabs [data-baseweb="tab"] { height: 50px; white-space: pre-wrap; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -69,7 +70,6 @@ for b_id in FLEET:
         speed = loc.get('speed', 0)
         heading = None
         
-        # RICHTING LOGICA (vorige positie vergelijken voor nauwkeurige pijltjes)
         if b_id in st.session_state.history:
             prev = st.session_state.history[b_id]
             dist = abs(curr_lat - prev['lat']) + abs(curr_lon - prev['lon'])
@@ -84,58 +84,50 @@ for b_id in FLEET:
         st.session_state.history[b_id] = {'lat': curr_lat, 'lon': curr_lon, 'heading': heading, 'in_zone': in_zone}
         current_bussen.append({"id": b_id, "lat": curr_lat, "lon": curr_lon, "speed": speed, "heading": heading, "in_zone": in_zone})
 
-# --- UI ---
+# --- UI LAYOUT ---
+tab1, tab2 = st.tabs(["📺 Live Monitor", "⚙️ Zone Instellen"])
+
 with st.sidebar:
     st.title("📊 Passages")
     for b_id, count in st.session_state.counter.items():
         st.write(f"Bus {b_id}: **{count}**")
     if st.button("Reset Tellers"):
         st.session_state.counter = {b_id: 0 for b_id in FLEET}; st.rerun()
-    st.divider()
-    st.info("Teken een polygoon of rechthoek op de kaart om de telzone in te stellen.")
 
-# --- KAART GENERATIE ---
-m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
+# --- TAB 1: DE STABIELE MONITOR ---
+with tab1:
+    m1 = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
+    if st.session_state.drawn_polygon:
+        folium.Polygon(locations=st.session_state.drawn_polygon, color="red", weight=2, fill=True, fill_opacity=0.2).add_to(m1)
 
-# Tekentool
-Draw(export=False, draw_options={'polyline':False,'circle':False,'marker':False,'circlemarker':False,'polygon':True,'rectangle':True}).add_to(m)
+    for b in current_bussen:
+        color = "#2ecc71" if b["in_zone"] else "#3498db"
+        if b['heading'] is not None and b['speed'] > 0:
+            icon_html = f'<div style="transform: rotate({b["heading"]-90}deg); color: {color}; font-size: 26px; text-shadow: 1px 1px 2px black;">➤</div>'
+        else:
+            icon_html = f'<div style="color: {color}; font-size: 22px; text-shadow: 1px 1px 2px black;">●</div>'
+        
+        label_html = f'<div style="background: rgba(255,255,255,0.95); border: 1px solid black; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; color: black;">{b["id"]} ({b["speed"]} km/u)</div>'
+        folium.Marker([b['lat'], b['lon']], icon=folium.DivIcon(html=f'<div style="display:flex; flex-direction:column; align-items:center;">{icon_html}{label_html}</div>', icon_size=(100,60), icon_anchor=(50,30))).add_to(m1)
 
-# Toon actieve zone
-if st.session_state.drawn_polygon:
-    folium.Polygon(locations=st.session_state.drawn_polygon, color="red", weight=2, fill=True, fill_opacity=0.2).add_to(m)
+    folium_static(m1, width=1400, height=800)
+    tz = pytz.timezone('Europe/Brussels')
+    st.caption(f"Laatste update: {datetime.now(tz).strftime('%H:%M:%S')}")
 
-# Teken bussen (Pijltje bij rijden, Bolletje bij stilstaan)
-for b in current_bussen:
-    color = "#2ecc71" if b["in_zone"] else "#3498db"
-    if b['heading'] is not None and b['speed'] > 0:
-        # We draaien het karakter '➤' (dat naar rechts wijst) met heading - 90
-        icon_html = f'<div style="transform: rotate({b["heading"]-90}deg); color: {color}; font-size: 26px; text-shadow: 1px 1px 2px black;">➤</div>'
-    else:
-        icon_html = f'<div style="color: {color}; font-size: 22px; text-shadow: 1px 1px 2px black;">●</div>'
+# --- TAB 2: ZONE SETUP (INTERACTIEF) ---
+with tab2:
+    st.subheader("Teken je zone op deze kaart")
+    m2 = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
+    Draw(export=False, draw_options={'polyline':False,'circle':False,'marker':False,'circlemarker':False,'polygon':True,'rectangle':True}).add_to(m2)
     
-    label_html = f'<div style="background: rgba(255,255,255,0.9); border: 1px solid black; padding: 2px 5px; border-radius: 4px; font-size: 11px; font-weight: bold; color: black; white-space: nowrap;">{b["id"]} ({b["speed"]} km/u)</div>'
-    folium.Marker([b['lat'], b['lon']], icon=folium.DivIcon(html=f'<div style="display:flex; flex-direction:column; align-items:center;">{icon_html}{label_html}</div>', icon_size=(100,60), icon_anchor=(50,30))).add_to(m)
+    # Gebruik st_folium hier alleen voor de interactie
+    out = st_folium(m2, width=1300, height=600, key="setup_map")
+    
+    if out and out.get("last_active_drawing"):
+        new_poly = out['last_active_drawing']['geometry']['coordinates'][0]
+        st.session_state.drawn_polygon = [[p[1], p[0]] for p in new_poly]
+        st.success("Zone opgeslagen! Ga naar de 'Live Monitor' tab.")
 
-# STAP 1: Gebruik st_folium ALLEEN om de getekende zone te vangen (onzichtbaar of klein)
-with st.expander("🛠️ Zone Bewerken / Kaart Instellingen", expanded=False):
-    st.write("Teken hier je zone. De live kaart hieronder zal updaten.")
-    output = st_folium(m, width=1300, height=400, key="draw_map", returned_objects=["last_active_drawing"])
-
-# STAP 2: Gebruik folium_static voor de LIVE WEERGAVE (geen refresh probleem)
-st.subheader("🚌 Live Vloot Monitor")
-folium_static(m, width=1400, height=750)
-
-# Verwerk input van de tekentool
-if output and output.get("last_active_drawing"):
-    new_poly = output['last_active_drawing']['geometry']['coordinates'][0]
-    formatted_poly = [[p[1], p[0]] for p in new_poly]
-    if st.session_state.drawn_polygon != formatted_poly:
-        st.session_state.drawn_polygon = formatted_poly
-        st.rerun()
-
-# Status info
-tz = pytz.timezone('Europe/Brussels')
-st.info(f"🕒 Laatste update: {datetime.now(tz).strftime('%H:%M:%S')} | 🚌 Bussen online: {len(current_bussen)}")
-
+# Auto-refresh alleen in de monitor tab
 time.sleep(25)
 st.rerun()
