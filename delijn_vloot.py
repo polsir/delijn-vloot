@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import json, ssl, urllib.request, math, time
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import folium
 from streamlit_folium import st_folium, folium_static
@@ -10,7 +10,6 @@ from folium.plugins import Draw
 # --- CONFIGURATIE ---
 st.set_page_config(layout="wide", page_title="De Lijn Tracker Pro", page_icon="🚌")
 
-# CSS voor een schone, schermvullende weergave
 st.markdown("""
     <style>
         .block-container { padding: 0rem 1rem !important; max-width: 100% !important; }
@@ -40,6 +39,8 @@ if 'history' not in st.session_state: st.session_state.history = {}
 if 'drawn_polygon' not in st.session_state: st.session_state.drawn_polygon = None
 if 'map_center' not in st.session_state: st.session_state.map_center = [51.0425, 4.3320]
 if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 15
+# Nieuw: trackt wanneer een bus is gestopt
+if 'stop_times' not in st.session_state: st.session_state.stop_times = {b_id: None for b_id in FLEET}
 
 # --- HELPER FUNCTIES ---
 def is_in_polygon(lat, lon, polygon):
@@ -66,6 +67,8 @@ def get_bus_data(bus_id):
 
 # --- DATA VERWERKING ---
 current_bussen = []
+now_utc = datetime.now(pytz.utc)
+
 for b_id in FLEET:
     loc = get_bus_data(b_id)
     if loc:
@@ -73,7 +76,18 @@ for b_id in FLEET:
         speed = loc.get('speed', 0)
         heading = None
         
-        # Heading logica op basis van beweging
+        # Stilstand Logica
+        if speed == 0:
+            if st.session_state.stop_times[b_id] is None:
+                st.session_state.stop_times[b_id] = now_utc
+            duration = now_utc - st.session_state.stop_times[b_id]
+            minutes, seconds = divmod(duration.seconds, 60)
+            stop_str = f"{minutes} min {seconds} sec"
+        else:
+            st.session_state.stop_times[b_id] = None
+            stop_str = "Rijdt"
+
+        # Heading logica
         if b_id in st.session_state.history:
             prev = st.session_state.history[b_id]
             dist = abs(curr_lat - prev['lat']) + abs(curr_lon - prev['lon'])
@@ -86,7 +100,11 @@ for b_id in FLEET:
             st.session_state.counter[b_id] += 1
         
         st.session_state.history[b_id] = {'lat': curr_lat, 'lon': curr_lon, 'heading': heading, 'in_zone': in_zone}
-        current_bussen.append({"id": b_id, "lat": curr_lat, "lon": curr_lon, "speed": speed, "heading": heading, "in_zone": in_zone})
+        current_bussen.append({
+            "id": b_id, "lat": curr_lat, "lon": curr_lon, 
+            "speed": speed, "heading": heading, "in_zone": in_zone,
+            "stop_duration": stop_str
+        })
 
 # --- UI INDELING ---
 tab1, tab2 = st.tabs(["📺 Live Monitor", "⚙️ Zone & Zoom Instellen"])
@@ -97,13 +115,10 @@ with st.sidebar:
         st.write(f"Bus {b_id}: **{count}**")
     if st.button("Reset Tellers"):
         st.session_state.counter = {b_id: 0 for b_id in FLEET}; st.rerun()
-    st.divider()
-    st.write(f"Huidige Zoom: **{st.session_state.map_zoom}**")
 
-# --- TAB 1: DE STABIELE MONITOR (Gebruikt folium_static) ---
+# --- TAB 1: LIVE MONITOR ---
 with tab1:
     m1 = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, control_scale=True)
-    
     if st.session_state.drawn_polygon:
         folium.Polygon(locations=st.session_state.drawn_polygon, color="red", weight=3, fill=True, fill_opacity=0.2).add_to(m1)
 
@@ -120,8 +135,20 @@ with tab1:
                 {b["id"]} ({b["speed"]} km/u)
             </div>
         '''
+        
+        # Popup tekst voor extra info bij klik
+        popup_text = f"""
+            <div style="font-family: sans-serif; font-size: 14px;">
+                <b>Bus ID:</b> {b['id']}<br>
+                <b>Snelheid:</b> {b['speed']} km/u<br>
+                <b>Status:</b> {b['stop_duration']}<br>
+                <b>In zone:</b> {'Ja' if b['in_zone'] else 'Nee'}
+            </div>
+        """
+        
         folium.Marker(
             [b['lat'], b['lon']], 
+            popup=folium.Popup(popup_text, max_width=200),
             icon=folium.DivIcon(
                 html=f'<div style="display:flex; flex-direction:column; align-items:center;">{icon_html}{label_html}</div>', 
                 icon_size=(150,70), icon_anchor=(75,35)
@@ -132,30 +159,19 @@ with tab1:
     tz = pytz.timezone('Europe/Brussels')
     st.info(f"🕒 Update: {datetime.now(tz).strftime('%H:%M:%S')} | 🚌 Actief: {len(current_bussen)}")
 
-# --- TAB 2: SETUP (Gebruikt st_folium voor interactiviteit) ---
+# --- TAB 2: SETUP ---
 with tab2:
-    st.subheader("Stel hier je voorkeuren in")
-    st.write("1. Zoom en verschuif de kaart naar wens. 2. Teken een zone. 3. Ga terug naar de Monitor.")
-    
+    st.subheader("Configuratie")
     m2 = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
     Draw(export=False, draw_options={'polyline':False,'circle':False,'marker':False,'circlemarker':False,'polygon':True,'rectangle':True}).add_to(m2)
-    
-    # Deze component vangt alle wijzigingen op
     out = st_folium(m2, width=1300, height=600, key="setup_map")
-    
     if out:
-        # Update zoom/center als de gebruiker de kaart beweegt in deze tab
-        if out.get("zoom") and out["zoom"] != st.session_state.map_zoom:
-            st.session_state.map_zoom = out["zoom"]
-        if out.get("center"):
-            st.session_state.map_center = [out["center"]["lat"], out["center"]["lng"]]
-        
-        # Update polygon als er getekend wordt
+        if out.get("zoom"): st.session_state.map_zoom = out["zoom"]
+        if out.get("center"): st.session_state.map_center = [out["center"]["lat"], out["center"]["lng"]]
         if out.get("last_active_drawing"):
             new_poly = out['last_active_drawing']['geometry']['coordinates'][0]
             st.session_state.drawn_polygon = [[p[1], p[0]] for p in new_poly]
-            st.success("Configuratie opgeslagen!")
+            st.success("Opgeslagen!")
 
-# Automatische verversing (om de 25 seconden)
 time.sleep(25)
 st.rerun()
