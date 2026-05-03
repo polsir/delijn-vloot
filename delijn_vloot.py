@@ -6,16 +6,14 @@ import pytz
 import folium
 from streamlit_folium import folium_static
 
-# --- SCHERMVULLENDE CONFIGURATIE ---
-st.set_page_config(layout="wide", page_title="De Lijn Analyse", page_icon="🚌")
+# --- CONFIGURATIE ---
+st.set_page_config(layout="wide", page_title="De Lijn Tracker", page_icon="🚌")
 
-# CSS om alle Streamlit marges te verwijderen voor een écht full-screen effect
+# Verbeterde styling voor maximale breedte zonder de boel te breken
 st.markdown("""
     <style>
-        .block-container { padding-top: 0rem; padding-bottom: 0rem; padding-left: 0rem; padding-right: 0rem; }
-        iframe { width: 100%; height: 85vh !important; }
-        header { visibility: hidden; }
-        footer { visibility: hidden; }
+        .main .block-container { max-width: 95%; padding-top: 1rem; }
+        iframe { width: 100% !important; height: 75vh !important; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -35,12 +33,12 @@ if not st.session_state.auth:
 API_KEY = st.secrets["DELIJN_API_KEY"]
 FLEET = ["302990", "302471", "331406", "645099", "645098", "645092"]
 
-# Sla 'passages' op in het geheugen van de sessie
 if 'counter' not in st.session_state:
     st.session_state.counter = {b_id: 0 for b_id in FLEET}
+if 'in_zone_last' not in st.session_state:
+    st.session_state.in_zone_last = {b_id: False for b_id in FLEET}
 
 def is_in_polygon(lat, lon, polygon):
-    """Controleert of een bus binnen een polygoon is (Ray Casting algoritme)."""
     n = len(polygon)
     inside = False
     p1x, p1y = polygon[0]
@@ -67,13 +65,9 @@ def get_bus_data(bus_id):
             return data["data"][0] if data.get("data") else None
     except: return None
 
-# --- COORDINATEN VOOR DE TEST-POLYGOON (Bijv. Markt van Bornem) ---
-# Je kunt dit later aanpasbaar maken via de sidebar
+# --- ZONE DEFINITIE (Bornem Markt voorbeeld) ---
 CHECK_ZONE = [
-    [51.0970, 4.2250],
-    [51.0985, 4.2250],
-    [51.0985, 4.2280],
-    [51.0970, 4.2280]
+    [51.0965, 4.2240], [51.0990, 4.2240], [51.0990, 4.2290], [51.0965, 4.2290]
 ]
 
 # --- VERWERKING ---
@@ -82,51 +76,57 @@ for b_id in FLEET:
     loc = get_bus_data(b_id)
     if loc:
         lat, lon = loc['lat'], loc['lon']
-        
-        # Check of bus in de zone rijdt
         in_zone = is_in_polygon(lat, lon, CHECK_ZONE)
-        if in_zone:
+        
+        # Alleen tellen als de bus de zone BINNENRIJDT (niet als hij er al in stond)
+        if in_zone and not st.session_state.in_zone_last[b_id]:
             st.session_state.counter[b_id] += 1
-            
-        current_bussen.append({
-            "id": b_id, "lat": lat, "lon": lon, 
-            "speed": loc.get('speed', 0), "in_zone": in_zone
-        })
+        
+        st.session_state.in_zone_last[b_id] = in_zone
+        current_bussen.append({"id": b_id, "lat": lat, "lon": lon, "speed": loc.get('speed', 0), "in_zone": in_zone})
 
-# --- KAART ---
-m = folium.Map(location=[51.05, 4.33], zoom_start=10, tiles="OpenStreetMap")
+# --- UI ---
+st.title("🚌 De Lijn Live Vloot Monitor")
 
-# Teken de Polygoon op de kaart
-folium.Polygon(
-    locations=CHECK_ZONE,
-    color="red",
-    fill=True,
-    fill_color="red",
-    fill_opacity=0.2,
-    tooltip="Controle Zone"
-).add_to(m)
-
-for b in current_bussen:
-    color = "green" if b["in_zone"] else "orange"
-    icon_html = f'<div style="color: {color}; font-size: 24px; text-shadow: 1px 1px 2px black;">●</div>'
-    label_html = f'<div style="background: white; border: 1px solid black; padding: 2px; font-size: 9px;">{b["id"]}<br>{st.session_state.counter[b["id"]]}x</div>'
-    
-    folium.Marker(
-        [b['lat'], b['lon']], 
-        icon=folium.DivIcon(html=f'<div>{icon_html}{label_html}</div>', icon_anchor=(15,15))
-    ).add_to(m)
-
-# Toon kaart schermvullend
-folium_static(m)
-
-# Sidebar info met statistieken
-st.sidebar.title("📊 Statistieken")
+# Sidebar Statistieken
+st.sidebar.title("📊 Passages in Zone")
 for b_id, count in st.session_state.counter.items():
-    st.sidebar.write(f"Bus {b_id}: {count} passages")
-
-if st.sidebar.button("Reset Teller"):
+    st.sidebar.write(f"Bus {b_id}: **{count}**")
+if st.sidebar.button("Reset Tellers"):
     st.session_state.counter = {b_id: 0 for b_id in FLEET}
     st.rerun()
 
+# Kaart
+m = folium.Map(location=[51.08, 4.25], zoom_start=12)
+
+folium.Polygon(
+    locations=CHECK_ZONE, color="red", weight=2, 
+    fill=True, fill_color="red", fill_opacity=0.1, tooltip="Analyse Zone"
+).add_to(m)
+
+for b in current_bussen:
+    color = "#2ecc71" if b["in_zone"] else "#e67e22"
+    icon_html = f'''
+        <div style="display: flex; flex-direction: column; align-items: center;">
+            <div style="color: {color}; font-size: 24px; text-shadow: 1px 1px 2px black;">●</div>
+            <div style="background: white; border: 1px solid black; padding: 1px 3px; border-radius: 3px; font-size: 10px; font-weight: bold; white-space: nowrap;">
+                {b['id']} ({b['speed']}kmu)
+            </div>
+        </div>
+    '''
+    folium.Marker([b['lat'], b['lon']], icon=folium.DivIcon(html=icon_html, icon_size=(100, 40), icon_anchor=(50, 20))).add_to(m)
+
+# Toon Kaart
+folium_static(m)
+
+# Statusbalken (Teruggezet!)
+c1, c2 = st.columns(2)
+tz = pytz.timezone('Europe/Brussels')
+with c1:
+    st.info(f"🕒 Laatste scan: {datetime.now(tz).strftime('%H:%M:%S')}")
+with c2:
+    st.success(f"🚌 Bussen online: {len(current_bussen)}")
+
+# Auto-refresh
 time.sleep(30)
 st.rerun()
