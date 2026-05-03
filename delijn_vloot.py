@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import json, ssl, urllib.request, math, time
 from datetime import datetime
+import pytz
 import folium
 from streamlit_folium import st_folium
 
@@ -9,7 +10,7 @@ from streamlit_folium import st_folium
 st.set_page_config(layout="wide", page_title="De Lijn Live Tracker", page_icon="🚌")
 
 def check_password():
-    """Geeft True als het juiste wachtwoord is ingevoerd."""
+    """Beheert de toegang met een wachtwoord."""
     if "auth" not in st.session_state:
         st.session_state.auth = False
 
@@ -26,19 +27,26 @@ def check_password():
             st.error("❌ Verkeerd wachtwoord")
     return False
 
+# Stop het script als men niet is ingelogd
 if not check_password():
     st.stop()
 
 # --- DATA FUNCTIES ---
 try:
     API_KEY = st.secrets["DELIJN_API_KEY"]
-except:
-    st.error("API Key ontbreekt in Secrets!")
+except Exception:
+    st.error("⚠️ API Key 'DELIJN_API_KEY' niet gevonden in Streamlit Secrets!")
     st.stop()
 
 FLEET = ["302990", "302471", "331406", "645099", "645098", "645092"]
 
+def get_belgian_time():
+    """Haalt de huidige tijd in België op voor de statusbalk."""
+    tz = pytz.timezone('Europe/Brussels')
+    return datetime.now(tz).strftime('%H:%M:%S')
+
 def calculate_bearing(lat1, lon1, lat2, lon2):
+    """Berekent de rijrichting tussen twee GPS-punten."""
     startLat, startLon = math.radians(lat1), math.radians(lon1)
     endLat, endLon = math.radians(lat2), math.radians(lon2)
     dLon = endLon - startLon
@@ -47,31 +55,41 @@ def calculate_bearing(lat1, lon1, lat2, lon2):
     return (math.degrees(math.atan2(y, x)) + 360) % 360
 
 def get_bus_data(bus_id):
-    url = f"https://api.delijn.be/location-tracking/v1/locations?vehicleId={bus_id}"
+    """Haalt data op van De Lijn met anti-caching parameter."""
+    # De 't=' parameter dwingt de server om nieuwe data te geven
+    url = f"https://api.delijn.be/location-tracking/v1/locations?vehicleId={bus_id}&t={int(time.time())}"
     ctx = ssl.create_default_context()
     ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
-    req = urllib.request.Request(url, headers={"Ocp-Apim-Subscription-Key": API_KEY, "User-Agent": "Mozilla/5.0"})
+    req = urllib.request.Request(url, headers={
+        "Ocp-Apim-Subscription-Key": API_KEY, 
+        "User-Agent": "Mozilla/5.0"
+    })
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=5) as r:
             data = json.loads(r.read().decode())
             return data["data"][0] if data.get("data") else None
-    except: return None
+    except Exception:
+        return None
 
-# --- STATE MANAGEMENT ---
+# --- STATE MANAGEMENT (Onthoudt geschiedenis en kaartpositie) ---
 if 'history' not in st.session_state:
     st.session_state.history = {}
+if "map_center" not in st.session_state:
+    st.session_state.map_center = [51.05, 4.33]
+if "map_zoom" not in st.session_state:
+    st.session_state.map_zoom = 10
 
 # --- DASHBOARD UI ---
 st.title("🚌 De Lijn Live Vloot Monitor")
 
-# Sidebar
+# Sidebar instellingen
 st.sidebar.header("Instellingen")
-refresh_rate = st.sidebar.slider("Verversingssnelheid (sec)", 10, 120, 30)
+refresh_rate = st.sidebar.slider("Verversingssnelheid (sec)", 10, 120, 20)
 if st.sidebar.button("Uitloggen"):
     st.session_state.auth = False
     st.rerun()
 
-# Data ophalen
+# Data ophalen en verwerken
 current_bussen = []
 for b_id in FLEET:
     loc = get_bus_data(b_id)
@@ -83,21 +101,18 @@ for b_id in FLEET:
         if b_id in st.session_state.history:
             prev = st.session_state.history[b_id]
             dist = abs(curr_lat - prev['lat']) + abs(curr_lon - prev['lon'])
-            if dist > 0.00008:
+            if dist > 0.00008: # Alleen draaien als er echt beweging is
                 heading = calculate_bearing(prev['lat'], prev['lon'], curr_lat, curr_lon)
             else:
                 heading = prev.get('heading')
         
-        current_bussen.append({"id": b_id, "lat": curr_lat, "lon": curr_lon, "speed": speed, "heading": heading})
+        current_bussen.append({
+            "id": b_id, "lat": curr_lat, "lon": curr_lon, 
+            "speed": speed, "heading": heading
+        })
         st.session_state.history[b_id] = {"lat": curr_lat, "lon": curr_lon, "heading": heading}
 
 # --- KAART ---
-# We onthouden waar de gebruiker naar kijkt (center/zoom) zodat hij niet verspringt bij refresh
-if "map_center" not in st.session_state:
-    st.session_state.map_center = [51.05, 4.33]
-if "map_zoom" not in st.session_state:
-    st.session_state.map_zoom = 10
-
 m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
 
 for b in current_bussen:
@@ -117,26 +132,27 @@ for b in current_bussen:
         </div>
     </div>
     """
+
     folium.Marker(
         [b['lat'], b['lon']],
         icon=folium.DivIcon(html=full_html, icon_size=(80, 80), icon_anchor=(40, 40))
     ).add_to(m)
 
-# Toon kaart en sla wijzigingen in zoom/positie op
+# Toon kaart en vang wijzigingen op (gebruik .get() om KeyError te voorkomen)
 map_data = st_folium(m, width="100%", height=600, returned_objects=["zoom", "center"])
 
-if map_data["center"]:
+if map_data and map_data.get("center"):
     st.session_state.map_center = [map_data["center"]["lat"], map_data["center"]["lng"]]
-if map_data["zoom"]:
+if map_data and map_data.get("zoom"):
     st.session_state.map_zoom = map_data["zoom"]
 
-# Info panel
+# Info panel met Belgische tijdzone
 c1, c2 = st.columns(2)
 with c1:
-    st.info(f"🕒 Update: {datetime.now().strftime('%H:%M:%S')}")
+    st.info(f"🕒 Laatste scan (BE): {get_belgian_time()}")
 with c2:
-    st.success(f"🚌 Actief: {len(current_bussen)} bussen")
+    st.success(f"🚌 Online: {len(current_bussen)} bussen")
 
-# Wacht voor de volgende refresh
+# Auto-refresh logica
 time.sleep(refresh_rate)
 st.rerun()
