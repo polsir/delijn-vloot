@@ -5,20 +5,40 @@ from datetime import datetime
 import folium
 from streamlit_folium import st_folium
 
-# --- CONFIGURATIE ---
+# --- CONFIGURATIE & BEVEILIGING ---
 st.set_page_config(layout="wide", page_title="De Lijn Live Tracker", page_icon="🚌")
 
-# Veilig ophalen van de API-key uit Streamlit Secrets
+def check_password():
+    """Geeft True als het juiste wachtwoord is ingevoerd."""
+    if "auth" not in st.session_state:
+        st.session_state.auth = False
+
+    if st.session_state.auth:
+        return True
+
+    st.title("🔒 Beveiligde Toegang")
+    pwd = st.text_input("Voer het wachtwoord in:", type="password")
+    if st.button("Inloggen"):
+        if pwd == st.secrets["APP_PASSWORD"]:
+            st.session_state.auth = True
+            st.rerun()
+        else:
+            st.error("❌ Verkeerd wachtwoord")
+    return False
+
+if not check_password():
+    st.stop()
+
+# --- DATA FUNCTIES ---
 try:
     API_KEY = st.secrets["DELIJN_API_KEY"]
-except Exception:
-    st.error("⚠️ API Key 'DELIJN_API_KEY' niet gevonden in Streamlit Secrets!")
+except:
+    st.error("API Key ontbreekt in Secrets!")
     st.stop()
 
 FLEET = ["302990", "302471", "331406", "645099", "645098", "645092"]
 
 def calculate_bearing(lat1, lon1, lat2, lon2):
-    """Berekent de rijrichting tussen twee punten."""
     startLat, startLon = math.radians(lat1), math.radians(lon1)
     endLat, endLon = math.radians(lat2), math.radians(lon2)
     dLon = endLon - startLon
@@ -27,34 +47,31 @@ def calculate_bearing(lat1, lon1, lat2, lon2):
     return (math.degrees(math.atan2(y, x)) + 360) % 360
 
 def get_bus_data(bus_id):
-    """Haalt de meest recente locatie op van de De Lijn API."""
     url = f"https://api.delijn.be/location-tracking/v1/locations?vehicleId={bus_id}"
     ctx = ssl.create_default_context()
     ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
-    req = urllib.request.Request(url, headers={
-        "Ocp-Apim-Subscription-Key": API_KEY, 
-        "User-Agent": "Mozilla/5.0"
-    })
+    req = urllib.request.Request(url, headers={"Ocp-Apim-Subscription-Key": API_KEY, "User-Agent": "Mozilla/5.0"})
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=5) as r:
             data = json.loads(r.read().decode())
             return data["data"][0] if data.get("data") else None
-    except Exception:
-        return None
+    except: return None
 
 # --- STATE MANAGEMENT ---
 if 'history' not in st.session_state:
     st.session_state.history = {}
 
-# --- UI ---
+# --- DASHBOARD UI ---
 st.title("🚌 De Lijn Live Vloot Monitor")
 
 # Sidebar
-refresh_rate = st.sidebar.slider("Verversingssnelheid (sec)", 10, 60, 15)
-if st.sidebar.button("Nu vernieuwen"):
+st.sidebar.header("Instellingen")
+refresh_rate = st.sidebar.slider("Verversingssnelheid (sec)", 10, 120, 30)
+if st.sidebar.button("Uitloggen"):
+    st.session_state.auth = False
     st.rerun()
 
-# Data ophalen en verwerken
+# Data ophalen
 current_bussen = []
 for b_id in FLEET:
     loc = get_bus_data(b_id)
@@ -71,26 +88,25 @@ for b_id in FLEET:
             else:
                 heading = prev.get('heading')
         
-        current_bussen.append({
-            "id": b_id, "lat": curr_lat, "lon": curr_lon, 
-            "speed": speed, "heading": heading
-        })
+        current_bussen.append({"id": b_id, "lat": curr_lat, "lon": curr_lon, "speed": speed, "heading": heading})
         st.session_state.history[b_id] = {"lat": curr_lat, "lon": curr_lon, "heading": heading}
 
-# Kaart maken
-m = folium.Map(location=[51.05, 4.33], zoom_start=10)
+# --- KAART ---
+# We onthouden waar de gebruiker naar kijkt (center/zoom) zodat hij niet verspringt bij refresh
+if "map_center" not in st.session_state:
+    st.session_state.map_center = [51.05, 4.33]
+if "map_zoom" not in st.session_state:
+    st.session_state.map_zoom = 10
+
+m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
 
 for b in current_bussen:
-    label = f"Bus {b['id']} ({b['speed']} km/u)"
-    
-    # Icoon bepalen (Pijl of Bol)
     if b['heading'] is not None:
         rot = b['heading'] - 90
         icon_html = f'<div style="transform: rotate({rot}deg); color: #e67e22; font-size: 26px; text-shadow: 1px 1px 2px black;">➤</div>'
     else:
         icon_html = '<div style="color: #7f8c8d; font-size: 20px; text-shadow: 1px 1px 2px black;">●</div>'
 
-    # HTML voor de marker (Pijl + Label)
     full_html = f"""
     <div style="display: flex; flex-direction: column; align-items: center; width: 80px;">
         {icon_html}
@@ -101,28 +117,26 @@ for b in current_bussen:
         </div>
     </div>
     """
-
     folium.Marker(
         [b['lat'], b['lon']],
-        popup=label,
-        tooltip=label,
-        icon=folium.DivIcon(
-            html=full_html,
-            icon_size=(80, 80),
-            icon_anchor=(40, 40)
-        )
+        icon=folium.DivIcon(html=full_html, icon_size=(80, 80), icon_anchor=(40, 40))
     ).add_to(m)
 
-# Kaart tonen
-st_folium(m, width="100%", height=700, key="vloot_kaart")
+# Toon kaart en sla wijzigingen in zoom/positie op
+map_data = st_folium(m, width="100%", height=600, returned_objects=["zoom", "center"])
 
-# Footer info
+if map_data["center"]:
+    st.session_state.map_center = [map_data["center"]["lat"], map_data["center"]["lng"]]
+if map_data["zoom"]:
+    st.session_state.map_zoom = map_data["zoom"]
+
+# Info panel
 c1, c2 = st.columns(2)
 with c1:
     st.info(f"🕒 Update: {datetime.now().strftime('%H:%M:%S')}")
 with c2:
     st.success(f"🚌 Actief: {len(current_bussen)} bussen")
 
-# Auto-refresh
+# Wacht voor de volgende refresh
 time.sleep(refresh_rate)
 st.rerun()
