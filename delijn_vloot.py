@@ -7,7 +7,7 @@ import folium
 from streamlit_folium import folium_static
 
 # --- CONFIGURATIE ---
-st.set_page_config(layout="wide", page_title="De Lijn Analyse", page_icon="🚌")
+st.set_page_config(layout="wide", page_title="De Lijn Tracker", page_icon="🚌")
 
 # --- BEVEILIGING ---
 if "auth" not in st.session_state: st.session_state.auth = False
@@ -21,18 +21,26 @@ if not st.session_state.auth:
         else: st.error("❌ Verkeerd")
     st.stop()
 
-# --- DATA & ANALYSE FUNCTIES ---
+# --- DATA FUNCTIES ---
 API_KEY = st.secrets["DELIJN_API_KEY"]
 FLEET = ["302990", "302471", "331406", "645099", "645098", "645092"]
 
-if 'counter' not in st.session_state:
-    st.session_state.counter = {b_id: 0 for b_id in FLEET}
-if 'in_zone_last' not in st.session_state:
-    st.session_state.in_zone_last = {b_id: False for b_id in FLEET}
+if 'counter' not in st.session_state: st.session_state.counter = {b_id: 0 for b_id in FLEET}
+if 'in_zone_last' not in st.session_state: st.session_state.in_zone_last = {b_id: False for b_id in FLEET}
+if 'center_coord' not in st.session_state: st.session_state.center_coord = [51.05, 4.33]
 
-def is_in_box(lat, lon, n, s, e, w):
-    """Controleert of de bus binnen de ingestelde vierkante zone valt."""
-    return s <= lat <= n and w <= lon <= e
+def geocode_city(city_name):
+    """Eenvoudige helper om steden naar coördinaten om te zetten via OpenStreetMap."""
+    try:
+        url = f"https://nominatim.openstreetmap.org/search?q={city_name.replace(' ', '+')}&format=json&limit=1"
+        headers = {"User-Agent": "DeLijnTrackerApp"}
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req) as r:
+            data = json.loads(r.read().decode())
+            if data:
+                return [float(data[0]['lat']), float(data[0]['lon'])]
+    except: return None
+    return None
 
 def get_bus_data(bus_id):
     url = f"https://api.delijn.be/location-tracking/v1/locations?vehicleId={bus_id}&t={int(time.time())}"
@@ -45,15 +53,26 @@ def get_bus_data(bus_id):
             return data["data"][0] if data.get("data") else None
     except: return None
 
-# --- SIDEBAR: ZONE INSTELLEN ---
-st.sidebar.title("🎯 Zone Instellen")
-st.sidebar.info("Pas de coördinaten aan om de controlebox te verplaatsen.")
+# --- SIDEBAR: EASY ZONE SETUP ---
+st.sidebar.title("📍 Zone Locatie")
+search_city = st.sidebar.text_input("Zoek locatie (bijv. Breendonk):")
+if st.sidebar.button("Verplaats kaart naar locatie"):
+    coord = geocode_city(search_city)
+    if coord:
+        st.session_state.center_coord = coord
+        st.rerun()
+    else:
+        st.sidebar.error("Locatie niet gevonden")
 
-# Standaardwaarden staan nu rond Bornem Markt
-lat_n = st.sidebar.number_input("Noord (Lat)", value=51.0990, format="%.4f")
-lat_s = st.sidebar.number_input("Zuid (Lat)", value=51.0965, format="%.4f")
-lon_e = st.sidebar.number_input("Oost (Lon)", value=4.2290, format="%.4f")
-lon_w = st.sidebar.number_input("West (Lon)", value=4.2240, format="%.4f")
+st.sidebar.divider()
+st.sidebar.write("↔️ **Box instellingen**")
+box_size = st.sidebar.slider("Grootte van de box (meters)", 50, 1000, 200) / 111000 # Ruwe conversie naar graden
+
+# Bereken de box rondom het middelpunt
+lat_n = st.session_state.center_coord[0] + box_size
+lat_s = st.session_state.center_coord[0] - box_size
+lon_e = st.session_state.center_coord[1] + (box_size * 1.5) # Lon is smaller op onze breedtegraad
+lon_w = st.session_state.center_coord[1] - (box_size * 1.5)
 
 CHECK_ZONE_BOX = [[lat_s, lon_w], [lat_n, lon_w], [lat_n, lon_e], [lat_s, lon_e]]
 
@@ -72,9 +91,8 @@ for b_id in FLEET:
     loc = get_bus_data(b_id)
     if loc:
         lat, lon = loc['lat'], loc['lon']
-        in_zone = is_in_box(lat, lon, lat_n, lat_s, lon_e, lon_w)
+        in_zone = lat_s <= lat <= lat_n and lon_w <= lon <= lon_e
         
-        # Detecteer 'Entry event' (als hij van buiten naar binnen komt)
         if in_zone and not st.session_state.in_zone_last[b_id]:
             st.session_state.counter[b_id] += 1
         
@@ -84,13 +102,11 @@ for b_id in FLEET:
 # --- UI HOOFDSCHERM ---
 st.title("🚌 De Lijn Live Vloot Monitor")
 
-# Kaart (we gebruiken weer folium_static voor stabiliteit)
-m = folium.Map(location=[(lat_n+lat_s)/2, (lon_e+lon_w)/2], zoom_start=14)
+m = folium.Map(location=st.session_state.center_coord, zoom_start=15)
 
-# Teken de handmatige box
 folium.Polygon(
     locations=CHECK_ZONE_BOX, color="red", weight=3, 
-    fill=True, fill_color="red", fill_opacity=0.15, tooltip="Jouw Analyse Zone"
+    fill=True, fill_color="red", fill_opacity=0.15, tooltip="Analyse Zone"
 ).add_to(m)
 
 for b in current_bussen:
@@ -107,14 +123,10 @@ for b in current_bussen:
 
 folium_static(m)
 
-# Statusbalken
 c1, c2 = st.columns(2)
 tz = pytz.timezone('Europe/Brussels')
-with c1:
-    st.info(f"🕒 Laatste scan: {datetime.now(tz).strftime('%H:%M:%S')}")
-with c2:
-    st.success(f"🚌 Bussen online: {len(current_bussen)}")
+with c1: st.info(f"🕒 Update: {datetime.now(tz).strftime('%H:%M:%S')}")
+with c2: st.success(f"🚌 Bussen online: {len(current_bussen)}")
 
-# Auto-refresh
 time.sleep(30)
 st.rerun()
