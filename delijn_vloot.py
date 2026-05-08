@@ -10,14 +10,9 @@ from folium.plugins import Draw
 # --- CONFIGURATIE ---
 st.set_page_config(layout="wide", page_title="De Lijn Tracker Pro", page_icon="🚌")
 
-# Cache bestand voor snelheid zoals gevraagd
-CACHE_FILE = "lanes_cache.json"
-
 st.markdown("""
     <style>
         .main .block-container { padding: 1.5rem 2rem !important; }
-        
-        /* Tab styling */
         button[data-baseweb="tab"] {
             font-size: 16px !important;
             font-weight: bold !important;
@@ -30,8 +25,6 @@ st.markdown("""
             background-color: #3498db !important;
             color: white !important;
         }
-
-        /* Dashboard Grid */
         .stat-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -45,18 +38,13 @@ st.markdown("""
             border-top: 4px solid #3498db;
             box-shadow: 0 2px 4px rgba(0,0,0,0.05);
             text-align: center;
-            border-left: 1px solid #eee; border-right: 1px solid #eee; border-bottom: 1px solid #eee;
+            border: 1px solid #eee;
         }
     </style>
 """, unsafe_allow_html=True)
 
-# --- INITIALISATIE & CACHE ---
+# --- INITIALISATIE ---
 API_KEY = st.secrets["DELIJN_API_KEY"]
-
-def load_cache():
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, 'r') as f: return json.load(f)
-    return {}
 
 if 'fleet' not in st.session_state:
     st.session_state.fleet = ["302990", "302471", "331406", "645099"]
@@ -70,6 +58,8 @@ def init_bus_state(b_id):
 for b in st.session_state.fleet: init_bus_state(b)
 if 'history' not in st.session_state: st.session_state.history = {}
 if 'drawn_polygon' not in st.session_state: st.session_state.drawn_polygon = None
+
+# Default zoom instellingen (als er nog niets is opgeslagen)
 if 'map_center' not in st.session_state: st.session_state.map_center = [51.0425, 4.3320]
 if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 13
 
@@ -105,7 +95,6 @@ with st.sidebar:
             st.session_state.fleet.append(new_bus)
             init_bus_state(new_bus)
             st.rerun()
-
     for b_id in st.session_state.fleet:
         c1, c2 = st.columns([4, 1])
         c1.write(f"🚌 {b_id}")
@@ -123,22 +112,17 @@ for b_id in st.session_state.fleet:
         lat, lon, speed = loc['lat'], loc['lon'], loc.get('speed', 0)
         in_z = is_in_polygon(lat, lon, st.session_state.drawn_polygon)
         was_in = st.session_state.history.get(b_id, {}).get('in_zone', False)
-        
-        # Zone teller & Reistijd
         if in_z and not was_in:
             st.session_state.counter[b_id] += 1
             if st.session_state.last_zone_exit[b_id]:
                 diff = now_utc - st.session_state.last_zone_exit[b_id]
                 st.session_state.last_travel_times[b_id] = f"{diff.seconds // 60}m {diff.seconds % 60}s"
         if was_in and not in_z: st.session_state.last_zone_exit[b_id] = now_utc
-
-        # Heading berekening
         head = st.session_state.history.get(b_id, {}).get('heading')
         if b_id in st.session_state.history:
             prev = st.session_state.history[b_id]
             if abs(lat - prev['lat']) + abs(lon - prev['lon']) > 0.00005:
                 head = math.degrees(math.atan2(math.sin(math.radians(lon - prev['lon'])) * math.cos(math.radians(lat)), math.cos(math.radians(prev['lat'])) * math.sin(math.radians(lat)) - math.sin(math.radians(prev['lat'])) * math.cos(math.radians(lat)) * math.cos(math.radians(lon - prev['lon'])))) % 360
-        
         st.session_state.history[b_id] = {'lat': lat, 'lon': lon, 'heading': head, 'in_zone': in_z}
         current_bussen.append({"id": b_id, "lat": lat, "lon": lon, "speed": speed, "heading": head, "in_zone": in_z})
 
@@ -146,27 +130,18 @@ for b_id in st.session_state.fleet:
 tab1, tab2, tab3 = st.tabs(["📺 LIVE MONITOR", "⚙️ ZONE INSTELLEN", "📊 HISTORIEK"])
 
 with tab1:
+    # Gebruik de opgeslagen zoom en center uit de state
     m1 = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
     if st.session_state.drawn_polygon:
         folium.Polygon(locations=st.session_state.drawn_polygon, color="red", weight=2, fill=True, fill_opacity=0.1).add_to(m1)
-
     for b in current_bussen:
         color = "#2ecc71" if b["in_zone"] else "#3498db"
         char = "➤" if b['heading'] is not None and b['speed'] > 0 else "●"
         rot = f"transform: rotate({b['heading']-90}deg);" if char == "➤" else ""
-        
-        # SNELHEID HIER TERUG TOEGEVOEGD
-        icon_html = f'''
-            <div style="display:flex; flex-direction:column; align-items:center;">
-                <div style="{rot} color:{color}; font-size:24px; text-shadow:1px 1px 2px black;">{char}</div>
-                <div style="background:white; border:1px solid {color}; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:bold; white-space:nowrap;">
-                    {b["id"]} ({b["speed"]} km/u)
-                </div>
-            </div>'''
-        
+        icon_html = f'<div style="display:flex; flex-direction:column; align-items:center;"><div style="{rot} color:{color}; font-size:24px; text-shadow:1px 1px 2px black;">{char}</div><div style="background:white; border:1px solid {color}; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:bold; white-space:nowrap;">{b["id"]} ({b["speed"]} km/u)</div></div>'
         folium.Marker([b['lat'], b['lon']], icon=folium.DivIcon(html=icon_html, icon_size=(150,70), icon_anchor=(75,35))).add_to(m1)
-
-    #returned_objects=[] voorkomt dat de kaart refresht bij elke klik/sleep
+    
+    # returned_objects=[] houdt de kaart statisch tussen de 25-seconden refreshes
     st_folium(m1, width=1600, height=650, key="live_map", returned_objects=[])
     
     st.markdown('<div class="stat-grid">', unsafe_allow_html=True)
@@ -176,13 +151,21 @@ with tab1:
     st.markdown('</div>', unsafe_allow_html=True)
 
 with tab2:
-    st.write("Teken een zone:")
+    st.info("Sleep de kaart naar de juiste positie, pas de zoom aan en teken de zone. De weergave wordt hierna 'vastgezet'.")
     m2 = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
     Draw(draw_options={'polyline':False,'circle':False,'marker':False,'circlemarker':False}).add_to(m2)
-    out = st_folium(m2, width=1200, height=600, key="setup")
-    if out and out.get("last_active_drawing"):
-        st.session_state.drawn_polygon = [[p[1], p[0]] for p in out['last_active_drawing']['geometry']['coordinates'][0]]
-        st.success("Zone ingesteld!"); st.rerun()
+    
+    # Hier vangen we de interactie van de gebruiker op
+    out = st_folium(m2, width=1200, height=600, key="zone_setup")
+    
+    if out:
+        # Update de globale zoom en center als de gebruiker de kaart beweegt in dit tabblad
+        if out.get("zoom"): st.session_state.map_zoom = out["zoom"]
+        if out.get("center"): st.session_state.map_center = [out["center"]["lat"], out["center"]["lng"]]
+        
+        if out.get("last_active_drawing"):
+            st.session_state.drawn_polygon = [[p[1], p[0]] for p in out['last_active_drawing']['geometry']['coordinates'][0]]
+            st.success("Zone en kaartpositie opgeslagen!"); st.rerun()
 
 with tab3:
     st.dataframe(pd.DataFrame(current_bussen), use_container_width=True)
