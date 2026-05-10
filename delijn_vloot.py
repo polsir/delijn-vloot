@@ -1,5 +1,5 @@
 import streamlit as st
-import pd as pd
+import pandas as pd  # <--- Hier zat de fout, nu hersteld
 import json, ssl, urllib.request, math, time
 from datetime import datetime
 import pytz
@@ -37,8 +37,13 @@ def check_password():
         st.title("🔒 Beveiligd Portaal")
         
         # Haal het wachtwoord op uit de secrets
-        target_password = st.secrets["APP_PASSWORD"]
-        
+        # Zorg dat 'APP_PASSWORD' in je Streamlit Secrets of secrets.toml staat!
+        try:
+            target_password = st.secrets["APP_PASSWORD"]
+        except:
+            st.error("Wachtwoord niet gevonden in secrets. Voeg 'APP_PASSWORD' toe.")
+            st.stop()
+            
         password_input = st.text_input("Voer het wachtwoord in:", type="password")
         if st.button("Inloggen"):
             if password_input == target_password:
@@ -120,7 +125,7 @@ def create_base_map():
                      attr='Google Traffic', name='Verkeer', overlay=True, opacity=0.6).add_to(m)
     return m
 
-# --- 6. HET FRAGMENT (SMOOTH REFRESH) ---
+# --- 6. HET FRAGMENT ---
 @st.fragment(run_every=25)
 def sync_monitor():
     current_bussen = []
