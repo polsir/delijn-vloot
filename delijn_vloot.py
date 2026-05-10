@@ -10,19 +10,15 @@ from folium.plugins import Draw
 # --- CONFIGURATIE ---
 st.set_page_config(layout="wide", page_title="De Lijn Tracker Pro", page_icon="🚌")
 
-# CSS: Muted kaart, UI verbeteringen en Timestamp styling
 st.markdown("""
     <style>
         .main .block-container { padding: 1rem 2rem !important; }
         .folium-map { filter: grayscale(10%) brightness(95%); border-radius: 12px; }
-        
-        /* Last Update Badge */
         .update-badge {
             background-color: #2c3e50; color: white; padding: 5px 15px;
             border-radius: 20px; font-weight: bold; font-size: 14px;
             display: inline-block; margin-bottom: 10px;
         }
-
         button[data-baseweb="tab"] {
             font-size: 15px !important; font-weight: bold !important;
             color: #444 !important; background-color: #f8f9fa !important;
@@ -53,7 +49,6 @@ def init_bus_state(b_id):
         if b_id not in st.session_state[key]:
             st.session_state[key][b_id] = 0 if key == 'counter' else ("-" if key == 'last_travel_times' else None)
 
-# Zorg dat alle bussen in de vloot een state hebben
 for b in st.session_state.fleet: init_bus_state(b)
 
 if 'history' not in st.session_state: st.session_state.history = {}
@@ -61,7 +56,7 @@ if 'drawn_polygon' not in st.session_state: st.session_state.drawn_polygon = Non
 if 'map_center' not in st.session_state: st.session_state.map_center = [51.02, 4.48]
 if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 10
 
-# --- SIDEBAR (HERSTELD) ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("📋 Watchlist Beheer")
     new_bus = st.text_input("Voeg busnummer toe:", placeholder="bvb. 645092")
@@ -117,8 +112,8 @@ for b_id in st.session_state.fleet:
     if loc:
         lat, lon, speed = loc['lat'], loc['lon'], loc.get('speed', 0)
         
-        # Stilstand check
-        if speed == 0:
+        # AANGEPAST: Stilstand drempel op 0.5 km/u
+        if speed < 0.5:
             if st.session_state.stop_times[b_id] is None: st.session_state.stop_times[b_id] = now_local
             stoppage = now_local - st.session_state.stop_times[b_id]
             stop_str = f"{stoppage.seconds // 60}m {stoppage.seconds % 60}s"
@@ -158,7 +153,6 @@ def create_base_map():
     return m
 
 with tab1:
-    # Update tijdstip weergave
     st.markdown(f'<div class="update-badge">⏱️ Laatste update: {now_local.strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
     
     m1 = create_base_map()
@@ -167,9 +161,17 @@ with tab1:
     
     for b in current_bussen:
         color = "#2ecc71" if b["in_zone"] else "#3498db"
-        char = "➤" if b['heading'] is not None and b['speed'] > 0 else "●"
+        # AANGEPAST: Toon pijltje enkel boven 0.5 km/u
+        char = "➤" if b['heading'] is not None and b['speed'] >= 0.5 else "●"
         rot = f"transform: rotate({b['heading']-90}deg);" if char == "➤" else ""
-        icon_html = f'<div style="display:flex; flex-direction:column; align-items:center; justify-content:center; width:100px; height:100px;"><div style="{rot} color:{color}; font-size:32px; text-shadow:2px 2px 4px rgba(0,0,0,0.4); line-height:1;">{char}</div><div style="background:white; border:2px solid {color}; padding:2px 6px; border-radius:5px; font-size:12px; font-weight:bold; color:#333; margin-top:2px; box-shadow:0 2px 4px rgba(0,0,0,0.2);">{b["id"]}</div></div>'
+        
+        icon_html = f'''
+            <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; width:100px; height:100px;">
+                <div style="{rot} color:{color}; font-size:32px; text-shadow:2px 2px 4px rgba(0,0,0,0.4); line-height:1;">{char}</div>
+                <div style="background:white; border:2px solid {color}; padding:2px 6px; border-radius:5px; font-size:12px; font-weight:bold; color:#333; margin-top:2px; box-shadow:0 2px 4px rgba(0,0,0,0.2);">
+                    {b["id"]}
+                </div>
+            </div>'''
         
         popup_html = f"<b>Bus {b['id']}</b><br><hr>🚀 Snelheid: {b['speed']} km/u<br>🛑 Stilstand: {b['stop_duration']}<br>📍 Buiten zone: {b['since_zone']}"
         folium.Marker([b['lat'], b['lon']], popup=folium.Popup(popup_html, max_width=200), icon=folium.DivIcon(html=icon_html, icon_size=(100,100), icon_anchor=(50,50))).add_to(m1)
@@ -183,7 +185,7 @@ with tab1:
     st.markdown('</div>', unsafe_allow_html=True)
 
 with tab2:
-    st.info("💡 **View Vergrendelen**: Sleep de kaart en pas de zoom aan. Klik op de knop hieronder om deze weergave als standaard in te stellen.")
+    st.info("💡 Stel hier de zone en standaard weergave in.")
     m2 = create_base_map()
     Draw(draw_options={'polyline':False,'circle':False,'marker':False,'circlemarker':False}).add_to(m2)
     out_setup = st_folium(m2, width=1200, height=600, key="setup")
@@ -194,7 +196,7 @@ with tab2:
             if out_setup.get("center"): st.session_state.map_center = [out_setup["center"]["lat"], out_setup["center"]["lng"]]
             if out_setup.get("last_active_drawing"):
                 st.session_state.drawn_polygon = [[p[1], p[0]] for p in out_setup['last_active_drawing']['geometry']['coordinates'][0]]
-            st.success("Huidige weergave vergrendeld voor Live Monitor!"); st.rerun()
+            st.success("Opgeslagen!"); st.rerun()
 
 with tab3:
     st.dataframe(pd.DataFrame(current_bussen), use_container_width=True)
