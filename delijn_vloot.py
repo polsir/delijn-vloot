@@ -1,83 +1,85 @@
 import streamlit as st
-import pandas as pd  # <--- Hier zat de fout, nu hersteld
-import json, ssl, urllib.request, math, time
-from datetime import datetime
+import pandas as pd
+import json, ssl, urllib.request, math, time, re
+from datetime import datetime, timedelta
 import pytz
 import folium
 from streamlit_folium import st_folium
 from folium.plugins import Draw
+from extra_streamlit_components import CookieManager
 
-# --- CONFIGURATIE & STYLING ---
+# --- 1. CONFIGURATIE & THEMA ---
 st.set_page_config(layout="wide", page_title="De Lijn Tracker Pro", page_icon="🚌")
+
+# Cookie Manager voor persistent login (30 dagen)
+cookie_manager = CookieManager()
 
 st.markdown("""
     <style>
+        /* Schermvullende kaart op desktop, goede padding op mobiel */
         .main .block-container { padding: 1rem 2rem !important; }
-        .folium-map { filter: grayscale(10%) brightness(95%); border-radius: 12px; }
+        @media (max-width: 768px) {
+            .main .block-container { padding: 0.5rem !important; }
+        }
+        
+        .folium-map { border-radius: 12px; border: 1px solid #ddd; }
+        
         .update-badge {
-            background-color: #2c3e50; color: white; padding: 5px 15px;
+            background-color: #2c3e50; color: white; padding: 6px 16px;
             border-radius: 20px; font-weight: bold; font-size: 14px;
-            display: inline-block; margin-bottom: 10px;
+            display: inline-block; margin-bottom: 12px;
         }
-        .stat-card {
-            background-color: white; border-radius: 8px; padding: 12px;
-            border-top: 5px solid #3498db; box-shadow: 0 2px 5px rgba(0,0,0,0.08);
-            text-align: center; border: 1px solid #eee;
-        }
-        .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-top: 15px; }
+        
+        /* Metric styling voor desktop (naast elkaar) */
+        [data-testid="stMetricValue"] { font-size: 24px !important; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 1. BEVEILIGING VIA SECRETS ---
-if 'authenticated' not in st.session_state:
-    st.session_state.authenticated = False
-
-def check_password():
-    if not st.session_state.authenticated:
+# --- 2. AUTHENTICATIE LOGICA ---
+def check_auth():
+    # Wacht heel even tot cookies geladen zijn (belangrijk voor desktop browser)
+    auth_cookie = cookie_manager.get("auth_token")
+    target_pw = st.secrets["APP_PASSWORD"]
+    
+    if auth_cookie != target_pw:
         st.title("🔒 Beveiligd Portaal")
-        
-        # Haal het wachtwoord op uit de secrets
-        # Zorg dat 'APP_PASSWORD' in je Streamlit Secrets of secrets.toml staat!
-        try:
-            target_password = st.secrets["APP_PASSWORD"]
-        except:
-            st.error("Wachtwoord niet gevonden in secrets. Voeg 'APP_PASSWORD' toe.")
-            st.stop()
-            
-        password_input = st.text_input("Voer het wachtwoord in:", type="password")
-        if st.button("Inloggen"):
-            if password_input == target_password:
-                st.session_state.authenticated = True
-                st.rerun()
-            else:
-                st.error("Onjuist wachtwoord. Probeer het opnieuw.")
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            pw_input = st.text_input("Wachtwoord:", type="password")
+            if st.button("Inloggen"):
+                if pw_input == target_pw:
+                    cookie_manager.set("auth_token", target_pw, expires_at=datetime.now() + timedelta(days=30))
+                    st.success("Sessie opgeslagen! App herstart...")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error("Onjuist wachtwoord.")
         st.stop()
 
-check_password()
+check_auth()
 
-# --- 2. INITIALISATIE ---
+# --- 3. INITIALISATIE & API ---
 API_KEY = st.secrets["DELIJN_API_KEY"]
 
 if 'fleet' not in st.session_state:
     st.session_state.fleet = ["302990", "107460", "331406", "645099"]
 
 def init_bus_state(b_id):
-    for key in ['counter', 'stop_times', 'last_zone_exit', 'last_travel_times']:
+    for key in ['counter', 'stop_times', 'last_zone_exit']:
         if key not in st.session_state: st.session_state[key] = {}
         if b_id not in st.session_state[key]:
-            st.session_state[key][b_id] = 0 if key == 'counter' else ("-" if key == 'last_travel_times' else None)
+            st.session_state[key][b_id] = 0 if key == 'counter' else None
 
 for b in st.session_state.fleet: init_bus_state(b)
 if 'history' not in st.session_state: st.session_state.history = {}
 if 'drawn_polygon' not in st.session_state: st.session_state.drawn_polygon = None
 if 'map_center' not in st.session_state: st.session_state.map_center = [51.02, 4.48]
-if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 10
+if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 11
 
-# --- 3. API FUNCTIES ---
 def get_bus_data(bus_id):
     url = f"https://api.delijn.be/location-tracking/v1/locations?vehicleId={bus_id}&t={int(time.time())}"
     ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
-    req = urllib.request.Request(url, headers={"Ocp-Apim-Subscription-Key": API_KEY, "User-Agent": "Mozilla/5.0"})
+    req = urllib.request.Request(url, headers={"Ocp-Apim-Subscription-Key": API_KEY})
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=5) as r:
             data = json.loads(r.read().decode())
@@ -98,115 +100,94 @@ def is_in_polygon(lat, lon, poly):
 
 # --- 4. ZIJBALK ---
 with st.sidebar:
-    st.header("📋 Beheer")
-    new_bus = st.text_input("Voeg voertuig toe:", placeholder="bvb. 107460")
+    st.header("📋 Vlootbeheer")
+    new_input = st.text_input("Voeg bus/tram toe (gebruik ;)", placeholder="205310; 207310")
     if st.button("➕ Toevoegen"):
-        if new_bus and new_bus not in st.session_state.fleet:
-            st.session_state.fleet.append(new_bus)
-            init_bus_state(new_bus); st.rerun()
+        if new_input:
+            for b_id in re.split(r'[;,]+', new_input):
+                clean = b_id.strip()
+                if clean and clean not in st.session_state.fleet:
+                    st.session_state.fleet.append(clean)
+                    init_bus_state(clean)
+            st.rerun()
     
+    st.divider()
     for b_id in st.session_state.fleet:
         c1, c2 = st.columns([4, 1])
         c1.write(f"🚌 {b_id}")
         if c2.button("🗑️", key=f"del_{b_id}"):
             st.session_state.fleet.remove(b_id); st.rerun()
-    
+
     st.divider()
-    if st.button("🚪 Uitloggen"):
-        st.session_state.authenticated = False
+    if st.button("🚪 Uitloggen (Wis Cookie)"):
+        cookie_manager.delete("auth_token")
         st.rerun()
 
-# --- 5. UI TABS ---
-tab1, tab2 = st.tabs(["📺 LIVE MONITOR", "⚙️ INSTELLINGEN"])
+# --- 5. TABS ---
+tab1, tab2 = st.tabs(["📺 LIVE MONITOR", "⚙️ CONFIGURATIE"])
 
-def create_base_map():
-    m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, tiles='CartoDB positron')
-    folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=m,traffic&x={x}&y={y}&z={z}', 
-                     attr='Google Traffic', name='Verkeer', overlay=True, opacity=0.6).add_to(m)
-    return m
+with tab1:
+    # We gebruiken een placeholder om de kaart telkens op DEZELFDE plek te overschrijven
+    map_placeholder = st.empty()
+    stats_placeholder = st.empty()
 
-# --- 6. HET FRAGMENT ---
-@st.fragment(run_every=25)
-def sync_monitor():
-    current_bussen = []
-    now_local = datetime.now(pytz.timezone('Europe/Brussels'))
-
-    for b_id in st.session_state.fleet:
-        loc = get_bus_data(b_id)
-        if loc:
-            lat, lon, speed = loc['lat'], loc['lon'], loc.get('speed', 0)
-            
-            if speed < 0.5:
-                if st.session_state.stop_times[b_id] is None: st.session_state.stop_times[b_id] = now_local
-                stoppage = now_local - st.session_state.stop_times[b_id]
-                stop_str = f"{stoppage.seconds // 60}m {stoppage.seconds % 60}s"
-            else:
-                st.session_state.stop_times[b_id] = None
-                stop_str = "Rijdt"
-
-            in_z = is_in_polygon(lat, lon, st.session_state.drawn_polygon)
-            was_in = st.session_state.history.get(b_id, {}).get('in_zone', False)
-            
-            if in_z and not was_in:
-                st.session_state.counter[b_id] += 1
-                if st.session_state.last_zone_exit[b_id]:
-                    diff = now_local - st.session_state.last_zone_exit[b_id]
-                    st.session_state.last_travel_times[b_id] = f"{diff.seconds // 60}m {diff.seconds % 60}s"
-            
-            if was_in and not in_z: st.session_state.last_zone_exit[b_id] = now_local
-            since_zone = "-" if not st.session_state.last_zone_exit[b_id] else f"{(now_local - st.session_state.last_zone_exit[b_id]).seconds // 60}m"
-            if in_z: since_zone = "In zone"
-
-            head = st.session_state.history.get(b_id, {}).get('heading')
-            if b_id in st.session_state.history:
-                prev = st.session_state.history[b_id]
-                if abs(lat - prev['lat']) + abs(lon - prev['lon']) > 0.00005:
-                    head = math.degrees(math.atan2(math.sin(math.radians(lon - prev['lon'])) * math.cos(math.radians(lat)), math.cos(math.radians(prev['lat'])) * math.sin(math.radians(lat)) - math.sin(math.radians(prev['lat'])) * math.cos(math.radians(lat)) * math.cos(math.radians(lon - prev['lon'])))) % 360
-            
-            st.session_state.history[b_id] = {'lat': lat, 'lon': lon, 'heading': head, 'in_zone': in_z}
-            current_bussen.append({"id": b_id, "lat": lat, "lon": lon, "speed": speed, "heading": head, "in_zone": in_z, "stop_duration": stop_str, "since_zone": since_zone})
-
-    with tab1:
-        st.markdown(f'<div class="update-badge">⏱️ Laatste update: {now_local.strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
-        m1 = create_base_map()
+    @st.fragment(run_every=25)
+    def sync_ui():
+        now = datetime.now(pytz.timezone('Europe/Brussels'))
+        
+        # Kaart voorbereiden
+        m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, tiles='CartoDB positron')
+        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=m,traffic&x={x}&y={y}&z={z}', 
+                         attr='Google', name='Verkeer', overlay=True, opacity=0.5).add_to(m)
         
         if st.session_state.drawn_polygon:
-            folium.Polygon(locations=st.session_state.drawn_polygon, color="#e74c3c", weight=3, fill=True, fill_opacity=0.1).add_to(m1)
-        
-        for b in current_bussen:
-            color = "#2ecc71" if b["in_zone"] else "#3498db"
-            char = "➤" if b['speed'] >= 0.5 and b['heading'] is not None else "●"
-            rot = f"transform: rotate({b['heading']-90}deg);" if char == "➤" else ""
-            
-            icon_html = f'''
-                <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; width:100px; height:100px;">
-                    <div style="{rot} color:{color}; font-size:32px; text-shadow:2px 2px 4px rgba(0,0,0,0.4); line-height:1;">{char}</div>
-                    <div style="background:white; border:2px solid {color}; padding:2px 6px; border-radius:5px; font-size:12px; font-weight:bold; color:#333; margin-top:2px; box-shadow:0 2px 4px rgba(0,0,0,0.2);">{b["id"]}</div>
-                </div>'''
-            
-            popup_html = f"<b>Voertuig {b['id']}</b><br><hr>🚀 {b['speed']} km/u<br>🛑 Stilstand: {b['stop_duration']}<br>📍 Buiten zone: {b['since_zone']}"
-            folium.Marker([b['lat'], b['lon']], popup=folium.Popup(popup_html, max_width=200), icon=folium.DivIcon(html=icon_html, icon_size=(100,100), icon_anchor=(50,50))).add_to(m1)
+            folium.Polygon(locations=st.session_state.drawn_polygon, color="#e74c3c", weight=3, fill=True, fill_opacity=0.1).add_to(m)
 
-        st_folium(m1, width=1600, height=700, key="live_map", returned_objects=[])
-        
-        st.markdown('<div class="stat-grid">', unsafe_allow_html=True)
+        # Data verwerken
         for b_id in st.session_state.fleet:
-            in_z = st.session_state.history.get(b_id, {}).get('in_zone', False)
-            st.markdown(f'<div class="stat-card" style="border-top-color:{"#2ecc71" if in_z else "#3498db"};"><b>{b_id}</b><br><span style="font-size:24px;">{st.session_state.counter[b_id]} ritten</span></div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+            loc = get_bus_data(b_id)
+            if loc:
+                lat, lon, speed = loc['lat'], loc['lon'], loc.get('speed', 0)
+                in_z = is_in_polygon(lat, lon, st.session_state.drawn_polygon)
+                was_in = st.session_state.history.get(b_id, {}).get('in_zone', False)
+                
+                if in_z and not was_in: st.session_state.counter[b_id] += 1
+                st.session_state.history[b_id] = {'lat': lat, 'lon': lon, 'in_zone': in_z}
 
-sync_monitor()
+                color = "#2ecc71" if in_z else "#3498db"
+                icon_html = f'''<div style="color:{color}; font-size:28px; font-weight:bold; text-align:center; text-shadow: 1px 1px 2px white;">
+                                <div style="background:white; border:2px solid {color}; border-radius:5px; padding:2px 5px; font-size:12px; color:black; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">{b_id}</div>
+                                {"●" if speed < 0.5 else "➤"}</div>'''
+                folium.Marker([lat, lon], icon=folium.DivIcon(html=icon_html, icon_anchor=(20,20))).add_to(m)
+
+        # Output naar placeholders (voorkomt dubbele kaarten)
+        with map_placeholder.container():
+            st.markdown(f'<div class="update-badge">⏱️ Laatste update: {now.strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
+            # Op desktop mag de kaart groter (600), op mobiel is 450 prima
+            st_folium(m, width="100%", height=600, key="universal_map", returned_objects=[])
+
+        with stats_placeholder.container():
+            st.markdown("### 📊 Rittenoverzicht")
+            cols = st.columns(min(len(st.session_state.fleet), 6))
+            for i, b_id in enumerate(st.session_state.fleet):
+                with cols[i % 6]:
+                    st.metric(label=f"Voertuig {b_id}", value=f"{st.session_state.counter[b_id]} ritten")
+
+    sync_ui()
 
 with tab2:
-    st.info("💡 Stel hier de standaard weergave en zone in.")
-    m2 = create_base_map()
-    Draw(draw_options={'polyline':False,'circle':False,'marker':False,'circlemarker':False}).add_to(m2)
-    out_setup = st_folium(m2, width=1200, height=600, key="setup")
+    st.header("📍 Zone & Kaart Instellingen")
+    st.info("Sleep de kaart naar de gewenste startpositie en teken een polygoon voor de rittenteller.")
     
-    if st.button("💾 Sla Positie & Zone op"):
+    m2 = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
+    Draw(draw_options={'polyline':False,'circle':False,'marker':False,'circlemarker':False}).add_to(m2)
+    out_setup = st_folium(m2, width="100%", height=500, key="setup_universal")
+    
+    if st.button("💾 Instellingen Opslaan"):
         if out_setup:
-            if out_setup.get("zoom"): st.session_state.map_zoom = out_setup["zoom"]
-            if out_setup.get("center"): st.session_state.map_center = [out_setup["center"]["lat"], out_setup["center"]["lng"]]
             if out_setup.get("last_active_drawing"):
                 st.session_state.drawn_polygon = [[p[1], p[0]] for p in out_setup['last_active_drawing']['geometry']['coordinates'][0]]
-            st.success("Opgeslagen!"); st.rerun()
+            st.session_state.map_center = [out_setup["center"]["lat"], out_setup["center"]["lng"]]
+            st.session_state.map_zoom = out_setup["zoom"]
+            st.success("Configuratie opgeslagen voor alle apparaten!")
+            st.rerun()
