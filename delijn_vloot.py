@@ -50,7 +50,10 @@ check_auth()
 
 # --- 3. INITIALISATIE ---
 API_KEY = st.secrets["DELIJN_API_KEY"]
-if 'fleet' not in st.session_state: st.session_state.fleet = ["302990", "107460", "331406", "645099"]
+
+# Standaard vloot aangepast voor het nieuwe project
+if 'fleet' not in st.session_state: 
+    st.session_state.fleet = ["441521", "401282", "442204", "616045", "642050", "441518", "442068", "610087", "610088", "616038", "616042", "616044", "441814", "611066"]
 
 def init_bus_state(b_id):
     for key in ['counter', 'stop_times', 'last_zone_exit']:
@@ -61,8 +64,10 @@ def init_bus_state(b_id):
 for b in st.session_state.fleet: init_bus_state(b)
 if 'history' not in st.session_state: st.session_state.history = {}
 if 'drawn_polygon' not in st.session_state: st.session_state.drawn_polygon = None
-if 'map_center' not in st.session_state: st.session_state.map_center = [51.02, 4.48]
-if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 12
+
+# Startlocatie aangepast naar Houthalen-Helchteren
+if 'map_center' not in st.session_state: st.session_state.map_center = [51.0315, 5.3741]
+if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 13
 
 def get_bus_data(bus_id):
     url = f"https://api.delijn.be/location-tracking/v1/locations?vehicleId={bus_id}&t={int(time.time())}"
@@ -126,7 +131,10 @@ with tab1:
         for b_id in st.session_state.fleet:
             loc = get_bus_data(b_id)
             if loc:
-                lat, lon, speed = loc['lat'], loc['lon'], loc.get('speed', 0)
+                lat = loc['lat']
+                lon = loc['lon']
+                speed = float(loc.get('speed') or 0) 
+                
                 in_z = is_in_polygon(lat, lon, st.session_state.drawn_polygon)
                 was_in = st.session_state.history.get(b_id, {}).get('in_zone', False)
                 
@@ -153,10 +161,9 @@ with tab1:
                 since_z = "-" if not st.session_state.last_zone_exit[b_id] else f"{(now - st.session_state.last_zone_exit[b_id]).seconds // 60}m"
                 if in_z: since_z = "In zone"
 
-                # --- VERBETERDE MARKER STYLING ---
+                # --- MARKER STYLING ---
                 color = "#2ecc71" if in_z else "#3498db"
                 char = "➤" if speed >= 0.5 else "●"
-                # De rotatie wordt nu alleen op het icoon toegepast, niet op het tekstvak
                 rotation = f"transform: rotate({heading-90}deg);" if char == "➤" else ""
                 
                 icon_html = f'''
@@ -182,7 +189,7 @@ with tab1:
 
         with map_box.container():
             st.markdown(f'<div class="update-badge">⏱️ Laatste update: {now.strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
-            st_folium(m, width="100%", height=600, key="map_v169", returned_objects=[])
+            st_folium(m, width="100%", height=600, key="map_v1611", returned_objects=[])
 
         with stats_box.container():
             cols = st.columns(min(len(st.session_state.fleet), 6))
@@ -195,7 +202,7 @@ with tab2:
     st.header("⚙️ Configuratie")
     m2 = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
     Draw(draw_options={'polyline':False,'circle':False,'marker':False,'circlemarker':False}).add_to(m2)
-    out = st_folium(m2, width="100%", height=500, key="cfg_v169")
+    out = st_folium(m2, width="100%", height=500, key="cfg_v1611")
     if st.button("💾 Opslaan"):
         if out:
             if out.get("last_active_drawing"):
