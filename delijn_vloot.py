@@ -51,9 +51,9 @@ check_auth()
 # --- 3. INITIALISATIE ---
 API_KEY = st.secrets["DELIJN_API_KEY"]
 
-# Standaard vloot aangepast voor het nieuwe project
+# Aangepaste vloot voor project Puurs
 if 'fleet' not in st.session_state: 
-    st.session_state.fleet = ["441521", "401282", "442204", "616045", "642050", "441518", "442068", "610087", "610088", "616038", "616042", "616044", "441814", "611066"]
+    st.session_state.fleet = ["221324", "221325", "304806", "304802", "304801", "502605"]
 
 def init_bus_state(b_id):
     for key in ['counter', 'stop_times', 'last_zone_exit']:
@@ -65,9 +65,9 @@ for b in st.session_state.fleet: init_bus_state(b)
 if 'history' not in st.session_state: st.session_state.history = {}
 if 'drawn_polygon' not in st.session_state: st.session_state.drawn_polygon = None
 
-# Startlocatie aangepast naar Houthalen-Helchteren
-if 'map_center' not in st.session_state: st.session_state.map_center = [51.0315, 5.3741]
-if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 13
+# Startlocatie aangepast naar Puurs met lokaal zoomniveau
+if 'map_center' not in st.session_state: st.session_state.map_center = [51.0760, 4.2780]
+if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 14
 
 def get_bus_data(bus_id):
     url = f"https://api.delijn.be/location-tracking/v1/locations?vehicleId={bus_id}&t={int(time.time())}"
@@ -95,7 +95,7 @@ with st.sidebar:
     new_ids = st.text_input("Voeg toe (bvb 205310; 207310)")
     if st.button("➕ Toevoegen"):
         if new_ids:
-            for b_id in re.split(r'[;,]+', new_ids):
+            for b_id in re.split(r'[;, ]+', new_ids): # Ook spaties toegestaan bij toevoegen
                 clean = b_id.strip()
                 if clean and clean not in st.session_state.fleet:
                     st.session_state.fleet.append(clean); init_bus_state(clean)
@@ -189,7 +189,7 @@ with tab1:
 
         with map_box.container():
             st.markdown(f'<div class="update-badge">⏱️ Laatste update: {now.strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
-            st_folium(m, width="100%", height=600, key="map_v1611", returned_objects=[])
+            st_folium(m, width="100%", height=600, key="map_v1612", returned_objects=[])
 
         with stats_box.container():
             cols = st.columns(min(len(st.session_state.fleet), 6))
@@ -202,7 +202,7 @@ with tab2:
     st.header("⚙️ Configuratie")
     m2 = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
     Draw(draw_options={'polyline':False,'circle':False,'marker':False,'circlemarker':False}).add_to(m2)
-    out = st_folium(m2, width="100%", height=500, key="cfg_v1611")
+    out = st_folium(m2, width="100%", height=500, key="cfg_v1612")
     if st.button("💾 Opslaan"):
         if out:
             if out.get("last_active_drawing"):
