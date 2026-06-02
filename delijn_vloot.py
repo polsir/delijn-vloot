@@ -7,6 +7,7 @@ import folium
 from streamlit_folium import st_folium
 from folium.plugins import Draw
 from extra_streamlit_components import CookieManager
+import concurrent.futures # <-- NIEUW: Voor het gelijktijdig ophalen van data
 
 # --- 1. CONFIGURATIE ---
 st.set_page_config(layout="wide", page_title="Bus Tracker Pro", page_icon="🚌")
@@ -51,7 +52,6 @@ check_auth()
 # --- 3. INITIALISATIE ---
 API_KEY = st.secrets["DELIJN_API_KEY"]
 
-# Aangepaste vloot voor project Puurs
 if 'fleet' not in st.session_state: 
     st.session_state.fleet = ["221324", "221325", "304806", "304802", "304801", "502605"]
 
@@ -65,16 +65,16 @@ for b in st.session_state.fleet: init_bus_state(b)
 if 'history' not in st.session_state: st.session_state.history = {}
 if 'drawn_polygon' not in st.session_state: st.session_state.drawn_polygon = None
 
-# Startlocatie aangepast naar Puurs met lokaal zoomniveau
 if 'map_center' not in st.session_state: st.session_state.map_center = [51.0760, 4.2780]
 if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 14
 
 def get_bus_data(bus_id):
+    # Timeout verlaagd naar 3 seconden om hangende verbindingen sneller af te kappen
     url = f"https://api.delijn.be/location-tracking/v1/locations?vehicleId={bus_id}&t={int(time.time())}"
     ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
     req = urllib.request.Request(url, headers={"Ocp-Apim-Subscription-Key": API_KEY})
     try:
-        with urllib.request.urlopen(req, context=ctx, timeout=5) as r:
+        with urllib.request.urlopen(req, context=ctx, timeout=3) as r:
             data = json.loads(r.read().decode()); return data["data"][0] if data.get("data") else None
     except: return None
 
@@ -95,12 +95,18 @@ with st.sidebar:
     new_ids = st.text_input("Voeg toe (bvb 205310; 207310)")
     if st.button("➕ Toevoegen"):
         if new_ids:
-            for b_id in re.split(r'[;, ]+', new_ids): # Ook spaties toegestaan bij toevoegen
+            for b_id in re.split(r'[;, ]+', new_ids):
                 clean = b_id.strip()
                 if clean and clean not in st.session_state.fleet:
                     st.session_state.fleet.append(clean); init_bus_state(clean)
             st.rerun()
     st.divider()
+    
+    # Voeg een knop toe om alles in één keer te wissen (handig bij 40 bussen)
+    if st.button("🗑️ Wis hele vloot"):
+        st.session_state.fleet = []
+        st.rerun()
+        
     for b_id in st.session_state.fleet:
         c1, c2 = st.columns([4, 1])
         c1.write(f"🚌 {b_id}")
@@ -128,8 +134,21 @@ with tab1:
         if st.session_state.drawn_polygon:
             folium.Polygon(locations=st.session_state.drawn_polygon, color="red", weight=2, fill=True, fill_opacity=0.1).add_to(m)
 
+        # --- NIEUW: MULTITHREADING BLOK ---
+        bus_data_results = {}
+        # Gebruik 15 'workers' om data gelijktijdig op te halen
+        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+            future_to_bus = {executor.submit(get_bus_data, b_id): b_id for b_id in st.session_state.fleet}
+            for future in concurrent.futures.as_completed(future_to_bus):
+                b_id = future_to_bus[future]
+                try:
+                    bus_data_results[b_id] = future.result()
+                except Exception:
+                    bus_data_results[b_id] = None
+
+        # Verwerk nu de binnengehaalde data razendsnel
         for b_id in st.session_state.fleet:
-            loc = get_bus_data(b_id)
+            loc = bus_data_results.get(b_id)
             if loc:
                 lat = loc['lat']
                 lon = loc['lon']
@@ -138,7 +157,6 @@ with tab1:
                 in_z = is_in_polygon(lat, lon, st.session_state.drawn_polygon)
                 was_in = st.session_state.history.get(b_id, {}).get('in_zone', False)
                 
-                # Ritten & Stilstand Logica
                 if in_z and not was_in: st.session_state.counter[b_id] += 1
                 if was_in and not in_z: st.session_state.last_zone_exit[b_id] = now
                 
@@ -150,7 +168,6 @@ with tab1:
                     st.session_state.stop_times[b_id] = None
                     stop_str = "Rijdt"
 
-                # Heading berekening voor pijltje
                 heading = 0
                 if b_id in st.session_state.history:
                     prev = st.session_state.history[b_id]
@@ -161,7 +178,6 @@ with tab1:
                 since_z = "-" if not st.session_state.last_zone_exit[b_id] else f"{(now - st.session_state.last_zone_exit[b_id]).seconds // 60}m"
                 if in_z: since_z = "In zone"
 
-                # --- MARKER STYLING ---
                 color = "#2ecc71" if in_z else "#3498db"
                 char = "➤" if speed >= 0.5 else "●"
                 rotation = f"transform: rotate({heading-90}deg);" if char == "➤" else ""
@@ -189,10 +205,11 @@ with tab1:
 
         with map_box.container():
             st.markdown(f'<div class="update-badge">⏱️ Laatste update: {now.strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
-            st_folium(m, width="100%", height=600, key="map_v1612", returned_objects=[])
+            st_folium(m, width="100%", height=600, key="map_v1613", returned_objects=[])
 
         with stats_box.container():
-            cols = st.columns(min(len(st.session_state.fleet), 6))
+            # Aangepast zodat het netjes blijft werken bij veel bussen
+            cols = st.columns(min(len(st.session_state.fleet), 6)) if st.session_state.fleet else st.columns(1)
             for i, b_id in enumerate(st.session_state.fleet):
                 with cols[i % 6]: st.metric(label=f"Bus {b_id}", value=f"{st.session_state.counter[b_id]}x")
 
@@ -202,7 +219,7 @@ with tab2:
     st.header("⚙️ Configuratie")
     m2 = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
     Draw(draw_options={'polyline':False,'circle':False,'marker':False,'circlemarker':False}).add_to(m2)
-    out = st_folium(m2, width="100%", height=500, key="cfg_v1612")
+    out = st_folium(m2, width="100%", height=500, key="cfg_v1613")
     if st.button("💾 Opslaan"):
         if out:
             if out.get("last_active_drawing"):
