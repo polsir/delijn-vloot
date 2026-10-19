@@ -152,9 +152,12 @@ with tab1:
     @st.fragment(run_every=25)
     def update_view():
         now = datetime.now(pytz.timezone('Europe/Brussels'))
-        m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, tiles='CartoDB positron')
-        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=m,traffic&x={x}&y={y}&z={z}', 
-                         attr='Google', name='Verkeer', overlay=True, opacity=0.5).add_to(m)
+        m = folium.Map(
+            location=st.session_state.map_center, 
+            zoom_start=st.session_state.map_zoom, 
+            tiles='https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', 
+            attr='Google'
+        )
         
         if st.session_state.drawn_polygon:
             folium.Polygon(locations=st.session_state.drawn_polygon, color="red", weight=2, fill=True, fill_opacity=0.1).add_to(m)
@@ -175,17 +178,15 @@ with tab1:
                 in_z = is_in_polygon(lat, lon, st.session_state.drawn_polygon)
                 was_in = st.session_state.history.get(b_id, {}).get('in_zone', False)
                 
-                # --- NIEUW: Rittijd (Heen en terug) Logica ---
+                # --- Rittijd (Heen en terug) Logica ---
                 if in_z and not was_in: 
                     st.session_state.counter[b_id] += 1
-                    # Bus komt binnen: meet hoe lang hij weg was
                     if st.session_state.last_zone_exit[b_id]:
                         duration = now - st.session_state.last_zone_exit[b_id]
                         st.session_state.last_trip_duration[b_id] = f"{duration.seconds // 60}m {duration.seconds % 60}s"
                     st.session_state.zone_entry_time[b_id] = now
                     
                 if was_in and not in_z: 
-                    # Bus vertrekt uit zone
                     st.session_state.last_zone_exit[b_id] = now
                     st.session_state.zone_entry_time[b_id] = None
                 
@@ -250,7 +251,12 @@ with tab1:
 
 with tab2:
     st.header("⚙️ Configuratie")
-    m2 = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
+    m2 = folium.Map(
+        location=st.session_state.map_center, 
+        zoom_start=st.session_state.map_zoom,
+        tiles='https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', 
+        attr='Google'
+    )
     Draw(draw_options={'polyline':False,'circle':False,'marker':False,'circlemarker':False}).add_to(m2)
     out = st_folium(m2, width="100%", height=500, key="cfg_v1614")
     if st.button("💾 Opslaan"):
