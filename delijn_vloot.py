@@ -81,7 +81,6 @@ if 'drawn_polygon' not in st.session_state:
     st.session_state.drawn_polygon = saved_cfg.get("drawn_polygon") if saved_cfg else None
 
 def init_bus_state(b_id):
-    # Nieuwe variabelen: last_trip_duration & zone_entry_time toegevoegd
     for key in ['counter', 'stop_times', 'last_zone_exit', 'last_trip_duration', 'zone_entry_time']:
         if key not in st.session_state: st.session_state[key] = {}
         if b_id not in st.session_state[key]:
@@ -152,11 +151,13 @@ with tab1:
     @st.fragment(run_every=25)
     def update_view():
         now = datetime.now(pytz.timezone('Europe/Brussels'))
+        
+        # Google Maps achtergrond mét ingebouwde verkeerslaag (lyrs=m,traffic)
         m = folium.Map(
             location=st.session_state.map_center, 
             zoom_start=st.session_state.map_zoom, 
-            tiles='https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', 
-            attr='Google'
+            tiles='https://mt1.google.com/vt/lyrs=m,traffic&x={x}&y={y}&z={z}', 
+            attr='Google Traffic'
         )
         
         if st.session_state.drawn_polygon:
@@ -254,8 +255,8 @@ with tab2:
     m2 = folium.Map(
         location=st.session_state.map_center, 
         zoom_start=st.session_state.map_zoom,
-        tiles='https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', 
-        attr='Google'
+        tiles='https://mt1.google.com/vt/lyrs=m,traffic&x={x}&y={y}&z={z}', 
+        attr='Google Traffic'
     )
     Draw(draw_options={'polyline':False,'circle':False,'marker':False,'circlemarker':False}).add_to(m2)
     out = st_folium(m2, width="100%", height=500, key="cfg_v1614")
